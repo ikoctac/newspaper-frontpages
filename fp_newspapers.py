@@ -10,83 +10,107 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 from PIL import Image
 
-# 1. HELPER: Finds the internal CSV file when running as .exe
-# NOTE: This function is kept, but it is not used for the external CSV file.
+# helps to get the path of resources when bundled with PyInstaller
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        # it can identify if it is running as a bundle .exe
         base_path = sys._MEIPASS
     except Exception:
+        # uses current directory for normal execution
         base_path = os.path.abspath(".")
-
+        # helps create paths relative to the script location
     return os.path.join(base_path, relative_path)
 
 class NewspaperBot:
     def __init__(self):
-        # 2. CONFIG: Determine the application's root path (where the .exe is)
+        # determines if the script is running as a bundled .exe or as a script
         if getattr(sys, 'frozen', False):
-            # If running as .exe, get the folder of the executable
+            # if its frozen, get the folder of the .exe(frozen? = am i running as exe)
             self.application_path = os.path.dirname(sys.executable)
         else:
-            # If running as script, get the folder of the script
+            # If running as script, get the folder path of the script
             self.application_path = os.path.dirname(os.path.abspath(__file__))
             
-        # 3. CONFIG: The script looks for "newspapers.csv" in the same folder as the .exe
+        # load CSV file from the same directory as the .exe or script
         self.csv_path = os.path.join(self.application_path, "newspapers.csv") 
         
-        # 4. CONFIG: Save output files in a subfolder next to the .exe
+        # 4. saves downloaded images to a subfolder "in downloaded_news_pictures"
         self.root_dir = os.path.join(self.application_path, "downloaded_news_pictures")
         self.today_dir = self._setup_directory()
         self.downloaded_images = []
         
-        # Site Configurations
+        # conserve urls as an object attribute
         self.url_frontpages = "https://www.frontpages.gr/"
         self.url_zougla = "https://www.zougla.gr/newspapers/"
 
+    # it searches if todays date folder exist or else it creates it
     def _setup_directory(self):
-        """Creates the folder for today's downloads."""
         date_str = datetime.now().strftime('%Y-%m-%d')
         path = os.path.join(self.root_dir, date_str)
         if not os.path.exists(path):
             os.makedirs(path)
         return path
 
+    # extract newspaper names from the CSV file
     def _read_target_newspapers(self, file_path: str) -> list[str]:
         names = []
+        # max length for newspaper names
+        MAX_LENGTH = 50 
+        
+        # read the CSV file to understand greek
         try:
             with open(file_path, mode='r', encoding='utf-8') as file:
                 reader = csv.DictReader(file)
                 for row in reader:
-                    name = row.get('NewspaperName', '').strip()
-                    if name:
+                    # clean and extract the newspaper name
+                    raw_val = row.get('NewspaperName', '')
+                    if raw_val is None: continue # skips empty rows
+                    name = str(raw_val).strip()
+                    # check the length and if its empty
+                    if name and len(name) <= MAX_LENGTH:
                         names.append(name)
-            print(f"✅ Loaded {len(names)} target newspapers from '{os.path.basename(file_path)}'.")
-        except FileNotFoundError:
-            print(f"🛑 Error: CSV file not found at {file_path}")
-        except KeyError:
-            print("🛑 Error: 'NewspaperName' column not found in CSV.")
+                    elif len(name) > MAX_LENGTH:
+                        print(f"⚠️ Skipping name because it's too long: {name[:20]}...")
+
+            print(f"✅ Loaded {len(names)} valid newspapers.")
+            
+        except Exception as e:
+            print(f"🛑 Error reading CSV: {e}")
+            
         return names
 
     def _normalize_text(self, text):
-        if not text: return ""
-        text = text.lower().strip()
-        # Normalize text to remove accents/diacritics for better comparison
-        return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
+        try:
+            if not text: return ""
+            text = text.lower().strip()
+            # remove non essential characters
+            text = ''.join(c for c in unicodedata.normalize('NFD', text) 
+                        if unicodedata.category(c) != 'Mn')
+            # cleanse to only alphanumeric and spaces (including Greek letters)
+            text = re.sub(r'[^a-z0-9\sα-ω]', '', text)
+            # return cleaned text
+            return text.strip()
+        except Exception as e:
+            # crash prevention
+            print(f"⚠️ Warning: Could not normalize text '{text}'. Error: {e}")
+            return ""
 
     def _check_date_generic(self, date_text):
-        try:
+        try:    
+            # assume valid if no date found which means its current date
             if not date_text: return True
             
+            # parse date in D/M or D/M/YYYY format of today
             now = datetime.now().date()
             clean_text = date_text.strip()
-            paper_date = None
+            paper_date = None #incase no match found
 
             # Check D/M
             match_short = re.search(r'(\d{1,2})\s*/\s*(\d{1,2})', clean_text)
             if match_short:
-                day, month = map(int, match_short.groups())
-                year = now.year
+                day, month = map(int, match_short.groups()) #string to int
+                year = now.year # assume current year
                 # Handle cases where the displayed date is Dec/Jan rollover
                 if month == 12 and now.month == 1: year -= 1
                 paper_date = datetime(year, month, day).date()
@@ -121,7 +145,7 @@ class NewspaperBot:
             
             with open(save_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    f.write(chunk)# if file is large, write in chunks
                     
             print(f"    ✅ Saved: {clean_name}")
             return save_path
@@ -294,7 +318,7 @@ class NewspaperBot:
                 self.generate_pdf()
             
         print("\n✨ Process finished.")
-        time.sleep(3) # Pause briefly at the end
+        time.sleep(3) # Pause briefly at the end to identify errors
 
 if __name__ == "__main__":
     bot = NewspaperBot()
